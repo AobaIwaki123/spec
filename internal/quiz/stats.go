@@ -7,18 +7,8 @@ import (
 	"sort"
 )
 
-// CategoryWeights defines the standard IPA Exam Category Weights (Morning II).
-var CategoryWeights = map[string]float64{
-	"正規化理論":            0.28,
-	"トランザクション・同時実行制御": 0.24,
-	"関係モデル・代数":        0.16,
-	"障害回復":             0.12,
-	"物理設計・インデックス":     0.12,
-	"SQL・整合性制約":        0.08,
-}
-
-// CalculatePredictedScore calculates predicted score, status, and confidence based on history.
-func CalculatePredictedScore(history []HistoryRecord) ScorePrediction {
+// CalculatePredictedScore calculates predicted score, status, and confidence based on history and category weights.
+func CalculatePredictedScore(history []HistoryRecord, weights map[string]float64) ScorePrediction {
 	if len(history) == 0 {
 		return ScorePrediction{
 			Score:      0.0,
@@ -63,7 +53,7 @@ func CalculatePredictedScore(history []HistoryRecord) ScorePrediction {
 	overallRecentRate := float64(recentCorrectCount) / float64(len(recentHistory))
 
 	predicted := 0.0
-	for cat, weight := range CategoryWeights {
+	for cat, weight := range weights {
 		rate := overallRecentRate
 		if st, ok := catStats[cat]; ok && st.total > 0 {
 			rate = float64(st.correct) / float64(st.total)
@@ -158,9 +148,9 @@ func GetQuestionStats(history []HistoryRecord) map[string]QuestionStat {
 }
 
 // RenderStats outputs the full monitoring report to writer.
-func RenderStats(w io.Writer, questions []Question, history []HistoryRecord) {
+func RenderStats(w io.Writer, store *Store, questions []Question, history []HistoryRecord) {
 	if len(history) == 0 {
-		fmt.Fprintln(w, "回答履歴はまだありません。クイズを実行すると自動的に記録されます。")
+		fmt.Fprintf(w, "[%s] 回答履歴はまだありません。クイズを実行すると自動的に記録されます。\n", store.ExamTitle())
 		return
 	}
 
@@ -178,21 +168,20 @@ func RenderStats(w io.Writer, questions []Question, history []HistoryRecord) {
 	}
 	overallRate := (float64(correctAnswers) / float64(totalAnswers)) * 100.0
 
-	pred := CalculatePredictedScore(history)
+	pred := CalculatePredictedScore(history, store.ExamDef().CategoryWeights)
 
 	fmt.Fprintln(w, "=================================================================")
-	fmt.Fprintln(w, " データベーススペシャリスト (DB) 学習履歴・得点能力モニタリング")
+	fmt.Fprintf(w, " %s 午前II 学習履歴・得点能力モニタリング\n", store.ExamTitle())
 	fmt.Fprintln(w, "=================================================================")
 	fmt.Fprintf(w, "・累計回答数: %d 問\n", totalAnswers)
 	fmt.Fprintf(w, "・累計正解数: %d 問 (通算正解率: %.1f%%)\n", correctAnswers, overallRate)
 	fmt.Fprintln(w, "-----------------------------------------------------------------")
-	fmt.Fprintf(w, "★ 午前II 予想得点:  %.1f 点 / 100点満点 (基準点: 60点)\n", pred.Score)
+	fmt.Fprintf(w, "★ 午前II 予想得点:  %.1f 点 / 100点満点 (基準点: %d点)\n", pred.Score, store.ExamDef().PassingScore)
 	fmt.Fprintf(w, "★ 現在の実力判定:  %s\n", pred.Status)
 	fmt.Fprintf(w, "★ 推論の信頼度:    %s\n", pred.Confidence)
 	fmt.Fprintln(w, "=================================================================")
 	fmt.Fprintln(w)
 
-	// Category stats
 	catStats := CalculateCategoryStats(history)
 	fmt.Fprintln(w, "【分野別 正解率・習熟度】")
 	fmt.Fprintf(w, "%-24s | %-6s | %-6s | %-8s | %s\n", "分野", "回答数", "正解数", "正解率", "判定")
@@ -203,7 +192,6 @@ func RenderStats(w io.Writer, questions []Question, history []HistoryRecord) {
 	fmt.Fprintln(w, "-----------------------------------------------------------------")
 	fmt.Fprintln(w)
 
-	// Wrong questions
 	qStats := GetQuestionStats(history)
 	var wrongIDs []string
 	for qid, st := range qStats {
@@ -231,5 +219,5 @@ func RenderStats(w io.Writer, questions []Question, history []HistoryRecord) {
 		fmt.Fprintf(w, "・[%s] (%s) 正解率: %d/%d - %s\n", qid, cat, st.Correct, st.Total, qText)
 	}
 	fmt.Fprintln(w, "=================================================================")
-	fmt.Fprintln(w, "※ '--review-wrong' (-r) オプションで上記弱点問題を集中的に演習できます。")
+	fmt.Fprintf(w, "※ 'spec %s -r' オプションで上記弱点問題を集中的に演習できます。\n", store.ExamID())
 }

@@ -17,7 +17,7 @@ type RunOptions struct {
 	All         bool
 }
 
-// RunInteractiveSession executes the interactive CLI quiz.
+// RunInteractiveSession executes the interactive CLI quiz with shuffled options.
 func RunInteractiveSession(store *Store, in io.Reader, out io.Writer, opts RunOptions) error {
 	questions, err := store.LoadQuestions()
 	if err != nil {
@@ -85,7 +85,7 @@ func RunInteractiveSession(store *Store, in io.Reader, out io.Writer, opts RunOp
 	selected := questions[:numToAsk]
 
 	fmt.Fprintln(out, "============================================================")
-	fmt.Fprintln(out, " データベーススペシャリスト (DB) 午前II対策 択一クイズ")
+	fmt.Fprintf(out, " %s 午前II対策 択一クイズ (選択肢常時シャッフル)\n", store.ExamTitle())
 	fmt.Fprintf(out, " 出題数: %d問 (回答履歴は自動保存されます)\n", numToAsk)
 	fmt.Fprintln(out, "============================================================")
 	fmt.Fprintln(out)
@@ -94,11 +94,14 @@ func RunInteractiveSession(store *Store, in io.Reader, out io.Writer, opts RunOp
 	correctCount := 0
 
 	for i, q := range selected {
+		// Always randomize options for this question
+		sq := ShuffleQuestion(q)
+
 		fmt.Fprintf(out, "[第 %d 問 / 全 %d 問] (分野: %s)\n", i+1, numToAsk, q.Category)
 		fmt.Fprintf(out, "ID: %s\n", q.ID)
 		fmt.Fprintln(out, q.Question)
 		fmt.Fprintln(out)
-		for idx, opt := range q.Options {
+		for idx, opt := range sq.ShuffledOptions {
 			fmt.Fprintf(out, "  %d. %s\n", idx+1, opt)
 		}
 		fmt.Fprintln(out)
@@ -129,14 +132,16 @@ func RunInteractiveSession(store *Store, in io.Reader, out io.Writer, opts RunOp
 			}
 		}
 
-		isCorrect := (userChoice == q.AnswerIndex)
+		isCorrect := (userChoice == sq.NewAnswerIndex)
+		originalChoice := sq.ResolveOriginalChoice(userChoice)
 
+		// Record to history using original indices for consistent persistent history
 		jst := time.FixedZone("JST", 9*60*60)
 		_ = store.AppendHistory(HistoryRecord{
 			Timestamp:       time.Now().In(jst).Format("2006-01-02T15:04:05.999999-07:00"),
 			QuestionID:      q.ID,
 			Category:        q.Category,
-			UserChoiceIndex: userChoice,
+			UserChoiceIndex: originalChoice,
 			CorrectIndex:    q.AnswerIndex,
 			IsCorrect:       isCorrect,
 			Source:          "cli",
@@ -146,11 +151,8 @@ func RunInteractiveSession(store *Store, in io.Reader, out io.Writer, opts RunOp
 			fmt.Fprintln(out, "\n>> 正解！")
 			correctCount++
 		} else {
-			correctOpt := ""
-			if q.AnswerIndex >= 0 && q.AnswerIndex < len(q.Options) {
-				correctOpt = q.Options[q.AnswerIndex]
-			}
-			fmt.Fprintf(out, "\n>> 不正解... (正解は %d. %s)\n", q.AnswerIndex+1, correctOpt)
+			correctOpt := sq.ShuffledOptions[sq.NewAnswerIndex]
+			fmt.Fprintf(out, "\n>> 不正解... (正解は %d. %s)\n", sq.NewAnswerIndex+1, correctOpt)
 		}
 
 		fmt.Fprintln(out, "--------------------------------------------------")
@@ -171,7 +173,7 @@ func RunInteractiveSession(store *Store, in io.Reader, out io.Writer, opts RunOp
 		fmt.Fprintln(out, " 評価: 基礎知識の定着が必要です。解説とノートを見直しましょう。")
 	}
 	fmt.Fprintf(out, " 履歴は %s に記録されました。\n", store.HistoryPath())
-	fmt.Fprintln(out, " 'db-quiz --stats' で分析を確認できます。")
+	fmt.Fprintf(out, " 'spec %s stats' で分析を確認できます。\n", store.ExamID())
 	fmt.Fprintln(out, "============================================================")
 
 	return nil

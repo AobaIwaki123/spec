@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,7 @@ type TaskStatus struct {
 	Status         string         `json:"status"` // idle, running, completed, failed
 	StartedAt      string         `json:"started_at,omitempty"`
 	FinishedAt     string         `json:"finished_at,omitempty"`
+	ExamID         string         `json:"exam_id"`
 	TargetYear     string         `json:"target_year"`
 	ExamType       string         `json:"exam_type"`
 	TotalItems     int            `json:"total_items"`
@@ -27,28 +29,21 @@ type TaskStatus struct {
 
 // Manager coordinates fetching and tracking.
 type Manager struct {
-	dataDir    string
-	statusPath string
-	examsDir   string
+	baseDataDir string
+	statusPath  string
 }
 
 // NewManager creates a Manager targeting the specified data directory.
-func NewManager(dataDir string) *Manager {
+func NewManager(baseDataDir string) *Manager {
 	return &Manager{
-		dataDir:    dataDir,
-		statusPath: filepath.Join(dataDir, "fetch_status.json"),
-		examsDir:   filepath.Join(dataDir, "exams"),
+		baseDataDir: baseDataDir,
+		statusPath:  filepath.Join(baseDataDir, "fetch_status.json"),
 	}
 }
 
 // StatusPath returns the task status JSON location.
 func (m *Manager) StatusPath() string {
 	return m.statusPath
-}
-
-// ExamsDir returns the directory where downloaded exam files are stored.
-func (m *Manager) ExamsDir() string {
-	return m.examsDir
 }
 
 // LoadStatus reads the current status from disk.
@@ -84,16 +79,17 @@ func (m *Manager) SaveStatus(st *TaskStatus) error {
 }
 
 // Run executes the download synchronously.
-func (m *Manager) Run(targetYear, examType string, progressFn func(cur, tot int, item string)) (*TaskStatus, error) {
+func (m *Manager) Run(examCode, targetYear, examType string, progressFn func(cur, tot int, item string)) (*TaskStatus, error) {
 	jst := time.FixedZone("JST", 9*60*60)
 	now := time.Now().In(jst).Format(time.RFC3339)
 
-	resources, err := DiscoverExamResources(targetYear, examType)
+	resources, err := DiscoverExamResources(examCode, targetYear, examType)
 	if err != nil {
 		st := &TaskStatus{
 			Status:     "failed",
 			StartedAt:  now,
 			FinishedAt: time.Now().In(jst).Format(time.RFC3339),
+			ExamID:     examCode,
 			TargetYear: targetYear,
 			ExamType:   examType,
 			Errors:     []string{fmt.Sprintf("discovery failed: %v", err)},
@@ -105,6 +101,7 @@ func (m *Manager) Run(targetYear, examType string, progressFn func(cur, tot int,
 	st := &TaskStatus{
 		Status:         "running",
 		StartedAt:      now,
+		ExamID:         examCode,
 		TargetYear:     targetYear,
 		ExamType:       examType,
 		TotalItems:     len(resources),
@@ -114,14 +111,14 @@ func (m *Manager) Run(targetYear, examType string, progressFn func(cur, tot int,
 	_ = m.SaveStatus(st)
 
 	for i, res := range resources {
-		st.CurrentItem = fmt.Sprintf("[%s %s] %s", res.Year, res.Type, res.FileName)
+		st.CurrentItem = fmt.Sprintf("[%s %s %s] %s", res.ExamID, res.Year, res.Type, res.FileName)
 		_ = m.SaveStatus(st)
 
 		if progressFn != nil {
 			progressFn(i+1, len(resources), st.CurrentItem)
 		}
 
-		bytes, err := DownloadResource(m.examsDir, res)
+		bytes, err := DownloadResource(m.baseDataDir, res)
 		if err != nil {
 			st.Errors = append(st.Errors, fmt.Sprintf("%s: %v", res.FileName, err))
 		} else {
@@ -147,17 +144,16 @@ func (m *Manager) Run(targetYear, examType string, progressFn func(cur, tot int,
 }
 
 // StartBackground launches the current binary as a background daemon process.
-func (m *Manager) StartBackground(targetYear, examType string) (int, error) {
+func (m *Manager) StartBackground(examCode, targetYear, examType string) (int, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, fmt.Errorf("unable to determine executable path: %w", err)
 	}
 
-	args := []string{"fetch", "--internal-worker", "--year", targetYear, "--type", examType}
+	args := []string{examCode, "fetch", "--internal-worker", "--year", targetYear, "--type", examType}
 
 	cmd := exec.Command(exe, args...)
-	cmd.Dir = filepath.Dir(m.dataDir)
-	// Detach process
+	cmd.Dir = m.baseDataDir
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
@@ -166,7 +162,6 @@ func (m *Manager) StartBackground(targetYear, examType string) (int, error) {
 		return 0, fmt.Errorf("failed to start background worker: %w", err)
 	}
 
-	// Wait a small moment to let worker write initial status
 	time.Sleep(300 * time.Millisecond)
 
 	return cmd.Process.Pid, nil
@@ -180,8 +175,12 @@ func (m *Manager) RenderStatus(w io.Writer) {
 		return
 	}
 
+	examCode := st.ExamID
+	if examCode == "" {
+		examCode = "db"
+	}
 	fmt.Fprintln(w, "=================================================================")
-	fmt.Fprintln(w, " 過去問PDF非同期取得タスク ステータス")
+	fmt.Fprintf(w, " [%s] 過去問PDF非同期取得タスク ステータス\n", strings.ToUpper(examCode))
 	fmt.Fprintln(w, "=================================================================")
 	fmt.Fprintf(w, "・実行状態: %s\n", st.Status)
 	if st.StartedAt != "" {
@@ -198,7 +197,7 @@ func (m *Manager) RenderStatus(w io.Writer) {
 	if st.CurrentItem != "" {
 		fmt.Fprintf(w, "・現在処理中: %s\n", st.CurrentItem)
 	}
-	fmt.Fprintf(w, "・保存先:   %s\n", m.examsDir)
+	fmt.Fprintf(w, "・保存先:   %s/%s/exams\n", m.baseDataDir, st.ExamID)
 
 	if len(st.Errors) > 0 {
 		fmt.Fprintln(w, "-----------------------------------------------------------------")
@@ -217,7 +216,7 @@ func (m *Manager) RenderStatus(w io.Writer) {
 				statusMark = "×"
 			}
 			mb := float64(item.Size) / (1024 * 1024)
-			fmt.Fprintf(w, " %s [%s] %-4s %-4s (%.2f MB) -> %s\n", statusMark, item.Year, item.Type, item.Kind, mb, item.FileName)
+			fmt.Fprintf(w, " %s [%s %s] %-4s %-4s (%.2f MB) -> %s\n", statusMark, item.ExamID, item.Year, item.Type, item.Kind, mb, item.FileName)
 		}
 	}
 	fmt.Fprintln(w, "=================================================================")

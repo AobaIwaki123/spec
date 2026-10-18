@@ -4,13 +4,17 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/AobaIwaki123/spec/internal/exam"
 )
 
 func TestStore_AppendAndLoadHistory(t *testing.T) {
 	tempDir := t.TempDir()
 	historyPath := filepath.Join(tempDir, "test_history.jsonl")
 
+	def, _ := exam.Lookup("db")
 	store := &Store{
+		examDef:     def,
 		historyPath: historyPath,
 	}
 
@@ -61,7 +65,9 @@ func TestRecordHistoryEntry(t *testing.T) {
 		t.Fatalf("failed to write test questions: %v", err)
 	}
 
+	def, _ := exam.Lookup("db")
 	store := &Store{
+		examDef:       def,
 		questionsPath: questionsPath,
 		historyPath:   historyPath,
 	}

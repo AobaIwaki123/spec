@@ -5,24 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_DIR="${HOME}/.local/bin"
 
-echo "=== Installing db-quiz ==="
+echo "=== Installing spec ==="
 cd "$REPO_ROOT"
 
 mkdir -p "$INSTALL_DIR"
-mkdir -p "$REPO_ROOT/data/exams"
+mkdir -p "$REPO_ROOT/data/db/exams"
 
 echo "Building binary with $(go version)..."
-rm -f "$INSTALL_DIR/db-quiz"
-go build -o "$INSTALL_DIR/db-quiz" ./cmd/db-quiz
-chmod +x "$INSTALL_DIR/db-quiz"
+rm -f "$INSTALL_DIR/spec"
+go build -o "$INSTALL_DIR/spec" ./cmd/spec
+chmod +x "$INSTALL_DIR/spec"
+
+# Backward compatibility alias
+ln -sf "$INSTALL_DIR/spec" "$INSTALL_DIR/db-quiz"
 
 echo "Verifying installation..."
-if command -v db-quiz >/dev/null 2>&1; then
-    echo "✓ db-quiz successfully installed to $INSTALL_DIR/db-quiz"
-    echo "✓ Path: $(which db-quiz)"
+if command -v spec >/dev/null 2>&1; then
+    echo "✓ spec successfully installed to $INSTALL_DIR/spec"
+    echo "✓ Path: $(which spec)"
 else
-    echo "⚠ Installed to $INSTALL_DIR/db-quiz, but $INSTALL_DIR is not in PATH."
-    echo "  Please add 'export PATH=\"\$HOME/.local/bin:\$PATH\"' to your ~/.zshrc or ~/.bashrc."
+    echo "⚠ Installed to $INSTALL_DIR/spec, but $INSTALL_DIR is not in PATH."
 fi
 
 echo "=== Installation complete ==="

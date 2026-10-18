@@ -4,8 +4,13 @@ import (
 	"testing"
 )
 
+var testWeights = map[string]float64{
+	"正規化理論": 0.5,
+	"障害回復": 0.5,
+}
+
 func TestCalculatePredictedScore_Empty(t *testing.T) {
-	pred := CalculatePredictedScore(nil)
+	pred := CalculatePredictedScore(nil, testWeights)
 	if pred.Score != 0.0 {
 		t.Errorf("expected 0.0, got %f", pred.Score)
 	}
@@ -23,7 +28,7 @@ func TestCalculatePredictedScore_HighRate(t *testing.T) {
 			IsCorrect:  true,
 		})
 	}
-	pred := CalculatePredictedScore(history)
+	pred := CalculatePredictedScore(history, testWeights)
 	if pred.Score < 95.0 {
 		t.Errorf("expected score >= 95.0, got %f", pred.Score)
 	}
@@ -56,17 +61,27 @@ func TestCalculateCategoryStats(t *testing.T) {
 	}
 }
 
-func TestGetQuestionStats(t *testing.T) {
-	history := []HistoryRecord{
-		{QuestionID: "db-001", IsCorrect: false},
-		{QuestionID: "db-001", IsCorrect: true},
-		{QuestionID: "db-002", IsCorrect: false},
+func TestShuffleQuestion(t *testing.T) {
+	q := Question{
+		ID:          "q-test",
+		Question:    "Test Question",
+		Options:     []string{"Opt A", "Opt B", "Opt C", "Opt D"},
+		AnswerIndex: 2, // "Opt C"
 	}
-	qStats := GetQuestionStats(history)
-	if !qStats["db-001"].LatestCorrect {
-		t.Errorf("expected db-001 latest to be correct")
+
+	sq := ShuffleQuestion(q)
+	if len(sq.ShuffledOptions) != 4 {
+		t.Fatalf("expected 4 options, got %d", len(sq.ShuffledOptions))
 	}
-	if qStats["db-002"].LatestCorrect {
-		t.Errorf("expected db-002 latest to be incorrect")
+
+	// Verify new answer index matches "Opt C"
+	if sq.ShuffledOptions[sq.NewAnswerIndex] != "Opt C" {
+		t.Errorf("expected new answer index to point to 'Opt C', got %s", sq.ShuffledOptions[sq.NewAnswerIndex])
+	}
+
+	// Verify reverse mapping
+	origIdx := sq.ResolveOriginalChoice(sq.NewAnswerIndex)
+	if origIdx != 2 {
+		t.Errorf("expected reverse mapped original index to be 2, got %d", origIdx)
 	}
 }

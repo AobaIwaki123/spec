@@ -9,10 +9,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/AobaIwaki123/spec/internal/exam"
 )
 
 // ExamResource represents a downloadable exam document (PDF).
 type ExamResource struct {
+	ExamID      string `json:"exam_id"`   // db, nw, sc, etc.
 	Year        string `json:"year"`
 	EraName     string `json:"era_name"`
 	Type        string `json:"type"`      // am2, pm1, pm2
@@ -39,8 +42,12 @@ var SupportedYears = []YearConfig{
 	{Year: "2020", EraCode: "2020r02", EraName: "令和2年度 10月"},
 }
 
-// DiscoverExamResources finds all DB exam PDF links for the specified year.
-func DiscoverExamResources(targetYear string, examTypeFilter string) ([]ExamResource, error) {
+// DiscoverExamResources finds all exam PDF links for the specified exam code and year.
+func DiscoverExamResources(examCode, targetYear, examTypeFilter string) ([]ExamResource, error) {
+	if examCode == "" {
+		examCode = string(exam.DefaultExamID)
+	}
+
 	var results []ExamResource
 
 	for _, yc := range SupportedYears {
@@ -49,14 +56,13 @@ func DiscoverExamResources(targetYear string, examTypeFilter string) ([]ExamReso
 		}
 
 		pageURL := fmt.Sprintf("https://www.ipa.go.jp/shiken/mondai-kaiotu/%s.html", yc.EraCode)
-		links, err := scrapePDFLinksFromIPA(pageURL)
+		links, err := scrapePDFLinksFromIPA(pageURL, examCode)
 		if err != nil || len(links) == 0 {
-			// Fallback to static mapping if dynamic fetch fails
-			links = getStaticLinksForYear(yc.Year)
+			links = getStaticLinksForYear(examCode, yc.Year)
 		}
 
 		for _, rawURL := range links {
-			res := parseResourceFromURL(rawURL, yc)
+			res := parseResourceFromURL(examCode, rawURL, yc)
 			if res == nil {
 				continue
 			}
@@ -70,7 +76,7 @@ func DiscoverExamResources(targetYear string, examTypeFilter string) ([]ExamReso
 	return results, nil
 }
 
-func scrapePDFLinksFromIPA(pageURL string) ([]string, error) {
+func scrapePDFLinksFromIPA(pageURL, examCode string) ([]string, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(pageURL)
 	if err != nil {
@@ -88,7 +94,8 @@ func scrapePDFLinksFromIPA(pageURL string) ([]string, error) {
 	}
 
 	htmlContent := string(bodyBytes)
-	re := regexp.MustCompile(`href="([^"]*_db_[^"]*\.pdf)"`)
+	pattern := fmt.Sprintf(`href="([^"]*_%s_[^"]*\.pdf)"`, examCode)
+	re := regexp.MustCompile(pattern)
 	matches := re.FindAllStringSubmatch(htmlContent, -1)
 
 	var links []string
@@ -106,13 +113,13 @@ func scrapePDFLinksFromIPA(pageURL string) ([]string, error) {
 	return links, nil
 }
 
-func parseResourceFromURL(rawURL string, yc YearConfig) *ExamResource {
+func parseResourceFromURL(examCode, rawURL string, yc YearConfig) *ExamResource {
 	parts := strings.Split(rawURL, "/")
 	fileName := parts[len(parts)-1]
 
-	// Expected filename pattern: <year>_<db>_<am2|pm1|pm2>_<qs|ans|cmnt>.pdf
 	lower := strings.ToLower(fileName)
-	if !strings.Contains(lower, "_db_") {
+	targetToken := fmt.Sprintf("_%s_", examCode)
+	if !strings.Contains(lower, targetToken) {
 		return nil
 	}
 
@@ -135,6 +142,7 @@ func parseResourceFromURL(rawURL string, yc YearConfig) *ExamResource {
 	}
 
 	return &ExamResource{
+		ExamID:   examCode,
 		Year:     yc.Year,
 		EraName:  yc.EraName,
 		Type:     examType,
@@ -144,8 +152,10 @@ func parseResourceFromURL(rawURL string, yc YearConfig) *ExamResource {
 	}
 }
 
-func getStaticLinksForYear(year string) []string {
-	// Fallback mappings for robust offline / degraded network execution
+func getStaticLinksForYear(examCode, year string) []string {
+	if examCode != "db" {
+		return nil
+	}
 	switch year {
 	case "2024":
 		base := "https://www.ipa.go.jp/shiken/mondai-kaiotu/m42obm000000afqx-att/"
@@ -176,16 +186,15 @@ func getStaticLinksForYear(year string) []string {
 	}
 }
 
-// DownloadResource downloads a single ExamResource into destDir/<Year>/<FileName>.
+// DownloadResource downloads a single ExamResource into destBaseDir/<ExamID>/exams/<Year>/<FileName>.
 func DownloadResource(destBaseDir string, res ExamResource) (int64, error) {
-	targetDir := filepath.Join(destBaseDir, res.Year)
+	targetDir := filepath.Join(destBaseDir, res.ExamID, "exams", res.Year)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return 0, fmt.Errorf("failed to create directory %s: %w", targetDir, err)
 	}
 
 	targetPath := filepath.Join(targetDir, res.FileName)
 
-	// If file already exists and size > 0, check if we can reuse
 	if fi, err := os.Stat(targetPath); err == nil && fi.Size() > 0 {
 		return fi.Size(), nil
 	}

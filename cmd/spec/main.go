@@ -9,8 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/AobaIwaki123/db-quiz/internal/fetcher"
-	"github.com/AobaIwaki123/db-quiz/internal/quiz"
+	"github.com/AobaIwaki123/spec/internal/exam"
+	"github.com/AobaIwaki123/spec/internal/fetcher"
+	"github.com/AobaIwaki123/spec/internal/quiz"
 )
 
 func main() {
@@ -21,10 +22,26 @@ func main() {
 }
 
 func run(args []string) error {
-	store := quiz.NewStore()
+	examKey := string(exam.DefaultExamID)
+	var remainingArgs []string
 
+	// Check if first arg is a known exam code (e.g. "db", "nw", "sc")
 	if len(args) > 0 {
-		subcmd := args[0]
+		first := strings.ToLower(args[0])
+		if _, ok := exam.Lookup(first); ok {
+			examKey = first
+			remainingArgs = args[1:]
+		} else {
+			remainingArgs = args
+		}
+	}
+
+	store := quiz.NewStore(examKey)
+
+	if len(remainingArgs) > 0 {
+		subcmd := strings.ToLower(remainingArgs[0])
+		subArgs := remainingArgs[1:]
+
 		switch subcmd {
 		case "stats":
 			return handleStats(store)
@@ -33,11 +50,13 @@ func run(args []string) error {
 		case "review":
 			return handleReview(store)
 		case "record":
-			return handleRecord(store, args[1:])
+			return handleRecord(store, subArgs)
 		case "question", "questions":
-			return handleQuestion(store, args[1:])
+			return handleQuestion(store, subArgs)
 		case "fetch", "download":
-			return handleFetch(store, args[1:])
+			return handleFetch(store, subArgs)
+		case "exams", "list-exams":
+			return handleListExams()
 		case "help", "-h", "--help":
 			printUsage()
 			return nil
@@ -45,7 +64,7 @@ func run(args []string) error {
 	}
 
 	// Handle root flags
-	rootFlags := flag.NewFlagSet("db-quiz", flag.ContinueOnError)
+	rootFlags := flag.NewFlagSet("spec", flag.ContinueOnError)
 	var (
 		count          = rootFlags.Int("n", 5, "Number of questions to ask (default: 5)")
 		countLong      = rootFlags.Int("count", 5, "Number of questions to ask (default: 5)")
@@ -56,11 +75,16 @@ func run(args []string) error {
 		all            = rootFlags.Bool("all", false, "Ask all questions in random order")
 		stats          = rootFlags.Bool("stats", false, "Show learning statistics and weak areas")
 		listCategories = rootFlags.Bool("list-categories", false, "List all available categories")
+		listExams      = rootFlags.Bool("exams", false, "List supported specialist exams")
 		recordJSON     = rootFlags.String("record", "", "Record a quiz attempt (JSON string or pass via 'record' subcommand)")
 	)
 
-	if err := rootFlags.Parse(args); err != nil {
+	if err := rootFlags.Parse(remainingArgs); err != nil {
 		return err
+	}
+
+	if *listExams {
+		return handleListExams()
 	}
 
 	effectiveCount := *count
@@ -114,7 +138,7 @@ func handleStats(store *quiz.Store) error {
 	if err != nil {
 		return err
 	}
-	quiz.RenderStats(os.Stdout, questions, history)
+	quiz.RenderStats(os.Stdout, store, questions, history)
 	return nil
 }
 
@@ -134,9 +158,22 @@ func handleListCategories(store *quiz.Store) error {
 	}
 	sort.Strings(cats)
 
-	fmt.Println("Available Categories:")
+	fmt.Printf("[%s] 利用可能な分野一覧:\n", store.ExamTitle())
 	for _, c := range cats {
-		fmt.Printf("  - %s (%d questions)\n", c, catCounts[c])
+		fmt.Printf("  - %s (%d 問)\n", c, catCounts[c])
+	}
+	return nil
+}
+
+func handleListExams() error {
+	exams := exam.AvailableExams()
+	sort.Slice(exams, func(i, j int) bool {
+		return exams[i].ID < exams[j].ID
+	})
+
+	fmt.Println("対応スペシャリスト試験一覧 (Go構造体定義):")
+	for _, e := range exams {
+		fmt.Printf("  - %-4s: %-18s [%s]\n", e.ID, e.Name, e.OfficialTitle)
 	}
 	return nil
 }
@@ -148,7 +185,7 @@ func handleReview(store *quiz.Store) error {
 }
 
 func handleRecord(store *quiz.Store, args []string) error {
-	fs := flag.NewFlagSet("db-quiz record", flag.ContinueOnError)
+	fs := flag.NewFlagSet("spec record", flag.ContinueOnError)
 	var (
 		id        = fs.String("id", "", "Question ID (e.g. db-001)")
 		choice    = fs.Int("choice", -1, "User choice index (0-3)")
@@ -193,7 +230,7 @@ func handleRecord(store *quiz.Store, args []string) error {
 }
 
 func handleQuestion(store *quiz.Store, args []string) error {
-	fs := flag.NewFlagSet("db-quiz question", flag.ContinueOnError)
+	fs := flag.NewFlagSet("spec question", flag.ContinueOnError)
 	var (
 		id          = fs.String("id", "", "Filter by specific Question ID")
 		category    = fs.String("category", "", "Filter by category")
@@ -246,7 +283,14 @@ func handleQuestion(store *quiz.Store, args []string) error {
 	if limit > len(filtered) {
 		limit = len(filtered)
 	}
-	selected := filtered[:limit]
+	selected := make([]quiz.Question, limit)
+	for i := 0; i < limit; i++ {
+		sq := quiz.ShuffleQuestion(filtered[i])
+		qCopy := filtered[i]
+		qCopy.Options = sq.ShuffledOptions
+		qCopy.AnswerIndex = sq.NewAnswerIndex
+		selected[i] = qCopy
+	}
 
 	if *asJSON {
 		var out []byte
@@ -271,10 +315,10 @@ func handleQuestion(store *quiz.Store, args []string) error {
 }
 
 func handleFetch(store *quiz.Store, args []string) error {
-	fs := flag.NewFlagSet("db-quiz fetch", flag.ContinueOnError)
+	fs := flag.NewFlagSet("spec fetch", flag.ContinueOnError)
 	var (
 		year           = fs.String("year", "all", "Target exam year (e.g. 2024, 2023, or 'all')")
-		allFlag        = fs.Bool("all", false, "Fetch all supported years (same as --year all)")
+		allFlag        = fs.Bool("all", false, "Fetch all supported years")
 		examType       = fs.String("type", "all", "Exam type filter (am2, pm1, pm2, or 'all')")
 		background     = fs.Bool("background", false, "Run download as a background daemon process")
 		backgroundD    = fs.Bool("d", false, "Run download as a background daemon process")
@@ -286,36 +330,36 @@ func handleFetch(store *quiz.Store, args []string) error {
 		return err
 	}
 
-	targetYear := *year
-	if *allFlag {
-		targetYear = "all"
-	}
-
-	mgr := fetcher.NewManager(store.DataDir())
+	mgr := fetcher.NewManager(store.BaseDataDir())
 
 	if *showStatus {
 		mgr.RenderStatus(os.Stdout)
 		return nil
 	}
 
+	targetYear := *year
+	if *allFlag {
+		targetYear = "all"
+	}
+
 	if *internalWorker {
-		_, err := mgr.Run(targetYear, *examType, nil)
+		_, err := mgr.Run(store.ExamID(), targetYear, *examType, nil)
 		return err
 	}
 
 	runBg := *background || *backgroundD
 	if runBg {
-		pid, err := mgr.StartBackground(targetYear, *examType)
+		pid, err := mgr.StartBackground(store.ExamID(), targetYear, *examType)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("過去問PDF取得タスクをバックグラウンドで開始しました (PID: %d)。\n", pid)
-		fmt.Printf("進行状況の確認: db-quiz fetch --status\n")
+		fmt.Printf("[%s] 過去問PDF取得タスクをバックグラウンドで開始しました (PID: %d)。\n", strings.ToUpper(store.ExamID()), pid)
+		fmt.Printf("進行状況の確認: spec %s fetch --status\n", store.ExamID())
 		return nil
 	}
 
-	fmt.Printf("IPA公式アーカイブから過去問PDFを取得しています (対象年度: %s, 区分: %s)...\n", targetYear, *examType)
-	_, err := mgr.Run(targetYear, *examType, func(cur, tot int, item string) {
+	fmt.Printf("[%s] IPA公式アーカイブから過去問PDFを取得しています (対象年度: %s, 区分: %s)...\n", strings.ToUpper(store.ExamID()), targetYear, *examType)
+	_, err := mgr.Run(store.ExamID(), targetYear, *examType, func(cur, tot int, item string) {
 		fmt.Printf("[%d/%d] 取得中: %s\n", cur, tot, item)
 	})
 	if err != nil {
@@ -328,32 +372,31 @@ func handleFetch(store *quiz.Store, args []string) error {
 }
 
 func printUsage() {
-	fmt.Println(`db-quiz - Database Specialist (IPA DB) Morning II Quiz & Monitoring Tool
+	fmt.Println(`spec - IPA Specialist Examination CLI & Continuous Learning Tool
 
 Usage:
-  db-quiz [options]
-  db-quiz <subcommand> [options]
+  spec [exam] [options]
+  spec [exam] <subcommand> [options]
+
+Exams (default: db):
+  db                  Database Specialist (データベーススペシャリスト)
+  nw                  Network Specialist (ネットワークスペシャリスト)
+  sc                  Information Security Specialist (情報処理安全確保支援士)
 
 Subcommands:
   stats               Display learning progress, predicted score, and weak topics
-  categories          List all available question categories
+  categories          List question categories for the exam
   review              Review questions answered incorrectly last time
-  record [flags]      Record a single question attempt (ideal for chat/agent integration)
+  record [flags]      Record a single question attempt (chat/agent integration)
   question [flags]    Fetch questions (supports JSON output for agent integration)
   fetch [flags]       Fetch and archive official IPA past exam PDFs (supports background execution)
+  exams               List all registered specialist exams
 
 Options:
   -n, --count <int>   Number of questions to ask (default: 5)
   -c, --category <str> Filter questions by category keyword
   -r, --review-wrong  Review questions answered incorrectly last time
   --all               Ask all available questions
-  --stats             Display statistics (same as 'db-quiz stats')
-  --list-categories   List categories (same as 'db-quiz categories')
-  --record <json>     Record attempt via JSON payload
-
-Fetch Subcommand Flags:
-  --year <year>       Target year (e.g. 2024, 2023, 2022, or 'all', default: all)
-  --type <type>       Filter exam type (am2, pm1, pm2, or 'all', default: all)
-  -d, --background    Run download asynchronously as a background daemon
-  --status            Display current download status and archived files`)
+  --stats             Display statistics (same as 'spec stats')
+  --exams             List supported exams`)
 }

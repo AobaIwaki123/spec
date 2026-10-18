@@ -13,11 +13,14 @@ func TestParseResourceFromURL(t *testing.T) {
 	}
 
 	url := "https://www.ipa.go.jp/shiken/mondai-kaiotu/m42obm000000afqx-att/2024r06a_db_am2_qs.pdf"
-	res := parseResourceFromURL(url, yc)
+	res := parseResourceFromURL("db", url, yc)
 	if res == nil {
 		t.Fatalf("expected non-nil resource")
 	}
 
+	if res.ExamID != "db" {
+		t.Errorf("expected db, got %s", res.ExamID)
+	}
 	if res.Year != "2024" {
 		t.Errorf("expected 2024, got %s", res.Year)
 	}
@@ -38,6 +41,7 @@ func TestManager_SaveAndLoadStatus(t *testing.T) {
 
 	st := &TaskStatus{
 		Status:         "completed",
+		ExamID:         "db",
 		TargetYear:     "2024",
 		TotalItems:     5,
 		CompletedItems: 5,
@@ -58,7 +62,7 @@ func TestManager_SaveAndLoadStatus(t *testing.T) {
 	if loaded.CompletedItems != 5 {
 		t.Errorf("expected 5 completed, got %d", loaded.CompletedItems)
 	}
-	if mgr.ExamsDir() != filepath.Join(tempDir, "exams") {
-		t.Errorf("unexpected exams dir: %s", mgr.ExamsDir())
+	if mgr.StatusPath() != filepath.Join(tempDir, "fetch_status.json") {
+		t.Errorf("unexpected status path: %s", mgr.StatusPath())
 	}
 }
