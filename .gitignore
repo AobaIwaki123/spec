@@ -1,0 +1,6 @@
+bin/
+*.log
+.DS_Store
+# Downloaded exam assets
+data/exams/**/*.pdf
+data/fetch_status.json
